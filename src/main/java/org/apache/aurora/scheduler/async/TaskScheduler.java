@@ -53,7 +53,6 @@ import org.apache.aurora.scheduler.state.TaskAssigner;
 import org.apache.aurora.scheduler.storage.Storage;
 import org.apache.aurora.scheduler.storage.Storage.MutableStoreProvider;
 import org.apache.aurora.scheduler.storage.Storage.MutateWork;
-import org.apache.aurora.scheduler.storage.TaskStore;
 import org.apache.aurora.scheduler.storage.entities.IScheduledTask;
 import org.apache.mesos.Protos.Offer;
 import org.apache.mesos.Protos.SlaveID;
@@ -132,17 +131,10 @@ interface TaskScheduler extends EventSubscriber {
       this.reservations = new Reservations(reservationDuration, clock);
     }
 
-    private static final Iterable<ScheduleStatus> ACTIVE_NOT_PENDING_STATES =
-        EnumSet.copyOf(Sets.difference(Tasks.ACTIVE_STATES, EnumSet.of(ScheduleStatus.PENDING)));
-
     private Function<Offer, Optional<TaskInfo>> getAssignerFunction(
-        TaskStore taskStore,
+        final CachedJobState cachedJobState,
         final String taskId,
         final IScheduledTask task) {
-
-      final CachedJobState cachedJobState = new CachedJobState(taskStore.fetchTasks(
-          Query.jobScoped(Tasks.SCHEDULED_TO_JOB_KEY.apply(task))
-              .byStatus(ACTIVE_NOT_PENDING_STATES)));
 
       return new Function<Offer, Optional<TaskInfo>>() {
         @Override public Optional<TaskInfo> apply(Offer offer) {
@@ -167,6 +159,9 @@ interface TaskScheduler extends EventSubscriber {
     static final Optional<String> LAUNCH_FAILED_MSG =
         Optional.of("Unknown exception attempting to schedule task.");
 
+    private static final Iterable<ScheduleStatus> ACTIVE_NOT_PENDING_STATES =
+        EnumSet.copyOf(Sets.difference(Tasks.ACTIVE_STATES, EnumSet.of(ScheduleStatus.PENDING)));
+
     @Timed("task_schedule_attempt")
     @Override
     public TaskSchedulerResult schedule(final String taskId) {
@@ -181,11 +176,13 @@ interface TaskScheduler extends EventSubscriber {
             if (task == null) {
               LOG.warning("Failed to look up task " + taskId + ", it may have been deleted.");
             } else {
+              final CachedJobState cachedJobState = new CachedJobState(store.getTaskStore()
+                  .fetchTasks(Query.jobScoped(Tasks.SCHEDULED_TO_JOB_KEY.apply(task))
+                      .byStatus(ACTIVE_NOT_PENDING_STATES)));
               try {
-                if (!offerQueue.launchFirst(
-                    getAssignerFunction(store.getTaskStore(), taskId, task))) {
+                if (!offerQueue.launchFirst(getAssignerFunction(cachedJobState, taskId, task))) {
                   // Task could not be scheduled.
-                  maybePreemptFor(taskId);
+                  maybePreemptFor(taskId, cachedJobState);
                   return TaskSchedulerResult.TRY_AGAIN;
                 }
               } catch (OfferQueue.LaunchException e) {
@@ -213,11 +210,11 @@ interface TaskScheduler extends EventSubscriber {
       }
     }
 
-    private void maybePreemptFor(String taskId) {
+    private void maybePreemptFor(String taskId, CachedJobState cachedJobState) {
       if (reservations.hasReservationForTask(taskId)) {
         return;
       }
-      Optional<String> slaveId = preemptor.findPreemptionSlotFor(taskId);
+      Optional<String> slaveId = preemptor.findPreemptionSlotFor(taskId, cachedJobState);
       if (slaveId.isPresent()) {
         this.reservations.add(SlaveID.newBuilder().setValue(slaveId.get()).build(), taskId);
       }
