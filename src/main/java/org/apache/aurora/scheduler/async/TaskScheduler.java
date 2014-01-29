@@ -17,6 +17,7 @@ package org.apache.aurora.scheduler.async;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.Target;
+import java.util.EnumSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -31,6 +32,7 @@ import com.google.common.base.Ticker;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 import com.google.common.eventbus.Subscribe;
 import com.google.inject.BindingAnnotation;
 import com.twitter.common.inject.TimedInterceptor.Timed;
@@ -40,14 +42,18 @@ import com.twitter.common.stats.StatImpl;
 import com.twitter.common.stats.Stats;
 import com.twitter.common.util.Clock;
 
+import org.apache.aurora.gen.ScheduleStatus;
 import org.apache.aurora.scheduler.base.Query;
+import org.apache.aurora.scheduler.base.Tasks;
 import org.apache.aurora.scheduler.events.PubsubEvent.EventSubscriber;
 import org.apache.aurora.scheduler.events.PubsubEvent.TaskStateChange;
+import org.apache.aurora.scheduler.filter.CachedJobState;
 import org.apache.aurora.scheduler.state.StateManager;
 import org.apache.aurora.scheduler.state.TaskAssigner;
 import org.apache.aurora.scheduler.storage.Storage;
 import org.apache.aurora.scheduler.storage.Storage.MutableStoreProvider;
 import org.apache.aurora.scheduler.storage.Storage.MutateWork;
+import org.apache.aurora.scheduler.storage.TaskStore;
 import org.apache.aurora.scheduler.storage.entities.IScheduledTask;
 import org.apache.mesos.Protos.Offer;
 import org.apache.mesos.Protos.SlaveID;
@@ -126,9 +132,17 @@ interface TaskScheduler extends EventSubscriber {
       this.reservations = new Reservations(reservationDuration, clock);
     }
 
+    private static final Iterable<ScheduleStatus> ACTIVE_NOT_PENDING_STATES =
+        EnumSet.copyOf(Sets.difference(Tasks.ACTIVE_STATES, EnumSet.of(ScheduleStatus.PENDING)));
+
     private Function<Offer, Optional<TaskInfo>> getAssignerFunction(
+        TaskStore taskStore,
         final String taskId,
         final IScheduledTask task) {
+
+      final CachedJobState cachedJobState = new CachedJobState(taskStore.fetchTasks(
+          Query.jobScoped(Tasks.SCHEDULED_TO_JOB_KEY.apply(task))
+              .byStatus(ACTIVE_NOT_PENDING_STATES)));
 
       return new Function<Offer, Optional<TaskInfo>>() {
         @Override public Optional<TaskInfo> apply(Offer offer) {
@@ -136,14 +150,14 @@ interface TaskScheduler extends EventSubscriber {
           if (reservedTaskId.isPresent()) {
             if (taskId.equals(reservedTaskId.get())) {
               // Slave is reserved to satisfy this task.
-              return assigner.maybeAssign(offer, task);
+              return assigner.maybeAssign(offer, task, cachedJobState);
             } else {
               // Slave is reserved for another task.
               return Optional.absent();
             }
           } else {
             // Slave is not reserved.
-            return assigner.maybeAssign(offer, task);
+            return assigner.maybeAssign(offer, task, cachedJobState);
           }
         }
       };
@@ -168,7 +182,8 @@ interface TaskScheduler extends EventSubscriber {
               LOG.warning("Failed to look up task " + taskId + ", it may have been deleted.");
             } else {
               try {
-                if (!offerQueue.launchFirst(getAssignerFunction(taskId, task))) {
+                if (!offerQueue.launchFirst(
+                    getAssignerFunction(store.getTaskStore(), taskId, task))) {
                   // Task could not be scheduled.
                   maybePreemptFor(taskId);
                   return TaskSchedulerResult.TRY_AGAIN;
