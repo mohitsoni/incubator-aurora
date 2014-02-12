@@ -5,14 +5,14 @@ Resource Isolation and Sizing
 Both user-facing aspects and how it works under the hood are subject to
 change.
 
-[Introduction](#Introduction)
-[CPU Isolation](#CPUisolation)
-[CPU Sizing](#CPUsizing)
-[Memory Isolation](#MemoryIsolation)
-[Memory Sizing](#MemorySizing)
-[Disk Space](#DiskSpace)
-[Disk Space Sizing](#DiskSpaceSizing)
-[Other Resources](#OtherResources)
+* [Introduction](#Introduction)
+* [CPU Isolation](#CPUisolation)
+* [CPU Sizing](#CPUsizing)
+* [Memory Isolation](#MemoryIsolation)
+* [Memory Sizing](#MemorySizing)
+* [Disk Space](#DiskSpace)
+* [Disk Space Sizing](#DiskSpaceSizing)
+* [Other Resources](#OtherResources)
 
 ## <a name="Introduction<> Introduction
 
